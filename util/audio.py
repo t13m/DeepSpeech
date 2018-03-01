@@ -3,7 +3,7 @@ from __future__ import absolute_import, print_function
 import scipy.io.wavfile as wav
 import sys
 
-from deepspeech.utils import audioToInputVector
+from deepspeech import audioToInputVector
 
 def audiofile_to_input_vector(audio_filename, numcep, numcontext):
     r"""
