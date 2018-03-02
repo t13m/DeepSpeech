@@ -8,6 +8,7 @@
 #endif
 
 #include <iostream>
+#include <vector>
 
 #include "deepspeech.h"
 #include "alphabet.h"
@@ -50,10 +51,9 @@ using tensorflow::ctc::CTCDecoder;
 
 namespace DeepSpeech {
 
-struct StreamingState {
-  float* accumulated_logits;
-  unsigned int capacity_timesteps;
-  unsigned int current_timestep;
+class StreamingState {
+public:
+  std::vector<float> accumulated_logits;
   short audio_buffer[AUDIO_WIN_LEN_SAMPLES];
   unsigned int audio_buffer_len;
   float mfcc_buffer[MFCC_FEATS_PER_TIMESTEP];
@@ -63,7 +63,8 @@ struct StreamingState {
   bool skip_next_mfcc;
 };
 
-struct Private {
+class Private {
+public:
   MemmappedEnv* mmap_env;
   Session* session;
   GraphDef graph_def;
@@ -120,7 +121,7 @@ private:
    *
    * @note This method will free @p logits.
    */
-  char* decode(int n_frames, float* logits);
+  char* decode(std::vector<float>& logits);
 
   /**
    * @brief Do a single inference step in the acoustic model, with:
@@ -133,7 +134,7 @@ private:
    * @param[out] output_logits Should be large enough to fit
    *                           aNFrames * alphabet_size floats.
    */
-  void infer(float* mfcc, int n_frames, float* output_logits);
+  void infer(float* mfcc, int n_frames, std::vector<float>& output_logits);
 
   void processAudioWindow(StreamingState* ctx, short* buf, unsigned int len);
   void processMfccWindow(StreamingState* ctx, float* buf, unsigned int len);
@@ -155,11 +156,7 @@ Private::setupStream(unsigned int prealloc_frames,
   StreamingState* ctx = new StreamingState;
   const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
 
-  float* logits = (float*)malloc(prealloc_frames * BATCH_SIZE * num_classes * sizeof(float));
-
-  ctx->accumulated_logits = logits;
-  ctx->capacity_timesteps = prealloc_frames;
-  ctx->current_timestep = 0;
+  ctx->accumulated_logits.reserve(prealloc_frames * BATCH_SIZE * num_classes);
 
   memset(ctx->audio_buffer, 0, sizeof(ctx->audio_buffer));
   ctx->audio_buffer_len = 0;
@@ -213,7 +210,7 @@ Private::finishStream(StreamingState* ctx)
     processBatch(ctx, ctx->batch_buffer, ctx->batch_buffer_len/MFCC_FEATS_PER_TIMESTEP);
   }
 
-  char* str = decode(ctx->current_timestep, ctx->accumulated_logits);
+  char* str = decode(ctx->accumulated_logits);
   delete ctx;
   return str;
 }
@@ -297,22 +294,16 @@ Private::addZeroMfccWindow(StreamingState* ctx)
 void
 Private::processBatch(StreamingState* ctx, float* buf, unsigned int n_steps)
 {
-  const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
-
-  if (ctx->current_timestep >= ctx->capacity_timesteps-n_steps) {
-    ctx->capacity_timesteps = ctx->capacity_timesteps * 2;
-    ctx->accumulated_logits = (float*)realloc(ctx->accumulated_logits, ctx->capacity_timesteps * BATCH_SIZE * num_classes * sizeof(float));
+  if (ctx->accumulated_logits.size() >= ctx->accumulated_logits.capacity() - n_steps) {
+    ctx->accumulated_logits.reserve(ctx->accumulated_logits.capacity() * 2);
   }
 
-  infer(buf, n_steps, &ctx->accumulated_logits[ctx->current_timestep * BATCH_SIZE * num_classes]);
-  ctx->current_timestep += n_steps;
+  infer(buf, n_steps, ctx->accumulated_logits);
 }
 
 void
-Private::infer(float* aMfcc, int n_frames, float* logits_output)
+Private::infer(float* aMfcc, int n_frames, std::vector<float>& logits_output)
 {
-  const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
-
   if (run_aot) {
 #ifdef DS_NATIVE_MODEL
     Eigen::ThreadPool tp(2);  // Size the thread pool as appropriate.
@@ -329,7 +320,7 @@ Private::infer(float* aMfcc, int n_frames, float* logits_output)
       for (int t = 0; t < DS_MODEL_TIMESTEPS, (ot + t) < n_frames; ++t) {
         for (int b = 0; b < BATCH_SIZE; ++b) {
           for (int c = 0; c < num_classes; ++c) {
-            logits_output[((ot + t) * BATCH_SIZE * num_classes) + (b * num_classes) + c] = nm.result0(t, b, c);
+            logits_output.push_back(nm.result0(t, b, c));
           }
         }
       }
@@ -362,23 +353,20 @@ Private::infer(float* aMfcc, int n_frames, float* logits_output)
       return;
     }
 
-    auto logits_mapped = outputs[0].tensor<float, 3>();
+    auto logits_mapped = outputs[0].flat<float>();
     // The CTCDecoder works with log-probs.
-    for (int t = 0; t < n_frames; ++t) {
-      for (int b = 0; b < BATCH_SIZE; ++b) {
-        for (int c = 0; c < num_classes; ++c) {
-          logits_output[(t * BATCH_SIZE * num_classes) + (b * num_classes) + c] = logits_mapped(t, b, c);
-        }
-      }
+    for (int t = 0; t < logits_mapped.size(); ++t) {
+      logits_output.push_back(logits_mapped(t));
     }
   }
 }
 
 char*
-Private::decode(int n_frames, float* logits)
+Private::decode(std::vector<float>& logits)
 {
   const int top_paths = 1;
   const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
+  const int n_frames = logits.size() / (BATCH_SIZE * num_classes);
 
   // Raw data containers (arrays of floats, ints, etc.).
   int sequence_lengths[BATCH_SIZE] = {n_frames};
@@ -417,15 +405,10 @@ Private::decode(int n_frames, float* logits)
     decoder.Decode(seq_len, inputs, &decoder_outputs, &scores).ok();
   }
 
-  free(logits);
-
-  // Output is an array of shape (1, n_results, result_length).
-  // In this case, n_results is also equal to 1.
-  size_t output_length = decoder_outputs[0][0].size() + 1;
+  // Output is an array of shape (batch_size, top_paths, result_length).
 
   std::stringstream output;
-  for (int i = 0; i < output_length - 1; i++) {
-    int64 character = decoder_outputs[0][0][i];
+  for (int64 character : decoder_outputs[0][0]) {
     output << alphabet->StringFromLabel(character);
   }
 
@@ -565,6 +548,9 @@ Model::stt(const short* aBuffer,
            int aSampleRate)
 {
   StreamingState* ctx = setupStream();
+  if (!ctx) {
+    return nullptr;
+  }
   feedAudioContent(ctx, aBuffer, aBufferSize);
   return finishStream(ctx);
 }

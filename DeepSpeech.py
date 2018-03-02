@@ -1699,9 +1699,6 @@ def create_inference_step_graph(batch_x, seq_length, fw_cell, previous_state, ba
     h3 = variable_on_worker_level('h3', [n_hidden_2, n_hidden_3], tf.random_normal_initializer(stddev=FLAGS.h3_stddev))
     layer_3 = tf.minimum(tf.nn.relu(tf.add(tf.matmul(layer_2, h3), b3)), FLAGS.relu_clip)
 
-    # Now we create the forward and backward LSTM units.
-    # Both of which have inputs of length `n_cell_dim` and bias `1.0` for the forget gate of the LSTM.
-
     # `layer_3` is now reshaped into `[n_steps, batch_size, n_hidden_3]`,
     # as the LSTM RNN expects its input to be of shape `[max_time, batch_size, input_size]`.
     layer_3 = tf.reshape(layer_3, [n_steps, batch_size, n_hidden_3])
@@ -1756,6 +1753,7 @@ def create_inference_graph(batch_size=None, n_steps=16, use_new_decoder=False):
 
     previous_state_c = variable_on_worker_level('previous_state_c', [batch_size, fw_cell.state_size.c], initializer=None)
     previous_state_h = variable_on_worker_level('previous_state_h', [batch_size, fw_cell.state_size.h], initializer=None)
+    previous_state = tf.contrib.rnn.LSTMStateTuple(previous_state_c, previous_state_h)
 
     initialize_c = tf.assign(previous_state_c, zero_state_c)
     initialize_h = tf.assign(previous_state_h, zero_state_h)
@@ -1763,7 +1761,12 @@ def create_inference_graph(batch_size=None, n_steps=16, use_new_decoder=False):
     initialize_state = tf.group(initialize_c, initialize_h, name='initialize_state')
 
     # Calculate the logits of the batch using BiRNN
-    logits, (new_state_c, new_state_h) = create_inference_step_graph(input_tensor, seq_length, fw_cell, tf.contrib.rnn.LSTMStateTuple(previous_state_c, previous_state_h), batch_size=batch_size, n_steps=n_steps)
+    logits, (new_state_c, new_state_h) = create_inference_step_graph(input_tensor,
+                                            seq_length if FLAGS.use_seq_length else None,
+                                            fw_cell=fw_cell,
+                                            previous_state=previous_state,
+                                            batch_size=batch_size,
+                                            n_steps=n_steps)
 
     with tf.control_dependencies([tf.assign(previous_state_c, new_state_c), tf.assign(previous_state_h, new_state_h)]):
         logits = tf.identity(logits)

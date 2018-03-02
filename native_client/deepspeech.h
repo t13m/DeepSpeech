@@ -1,5 +1,5 @@
-#ifndef __DEEPSPEECH_H__
-#define __DEEPSPEECH_H__
+#ifndef DEEPSPEECH_H
+#define DEEPSPEECH_H
 
 #include <cstddef>
 
@@ -8,9 +8,9 @@
 namespace DeepSpeech
 {
 
-  struct Private;
+  class Private;
 
-  struct StreamingState;
+  class StreamingState;
 
   class Model {
     private:
@@ -35,7 +35,7 @@ namespace DeepSpeech
       /**
        * @brief Frees associated resources and destroys model object.
        */
-      ~Model();
+      virtual ~Model();
 
       /**
        * @brief Enable decoding using beam scoring with a KenLM language model.
@@ -71,12 +71,12 @@ namespace DeepSpeech
        *                sample rate.
        * @param aBufferSize The sample-length of the audio signal.
        * @param aSampleRate The sample-rate of the audio signal.
-       * @param[out] aMFCC An array containing features, of shape
+       * @param[out] aMfcc An array containing features, of shape
        *                   (@p aNFrames, ncep * ncontext). The user is
        *                   responsible for freeing the array.
-       * @param[out] aNFrames (optional) The number of frames in @p aMFCC.
+       * @param[out] aNFrames (optional) The number of frames in @p aMfcc.
        * @param[out] aFrameLen (optional) The length of each frame
-       *                       (ncep * ncontext) in @p aMFCC.
+       *                       (ncep * ncontext) in @p aMfcc.
        */
       void getInputVector(const short* aBuffer,
                           unsigned int aBufferSize,
@@ -152,13 +152,14 @@ namespace DeepSpeech
    * @param aSampleRate The sample-rate of the audio signal.
    * @param aNCep The number of cepstrum.
    * @param aNContext The size of the context window.
-   * @param[out] aMFCC An array containing features, of shape
+   * @param[out] aMfcc An array containing features, of shape
    *                   (@p aNFrames, ncep * ncontext). The user is responsible
    *                   for freeing the array.
-   * @param[out] aNFrames (optional) The number of frames in @p aMFCC.
+   * @param[out] aNFrames (optional) The number of frames in @p aMfcc.
    * @param[out] aFrameLen (optional) The length of each frame
-   *                       (ncep * ncontext) in @p aMFCC.
+   *                       (ncep * ncontext) in @p aMfcc.
    */
+  extern "C"
   void audioToInputVector(const short* aBuffer,
                           unsigned int aBufferSize,
                           int aSampleRate,
@@ -170,4 +171,4 @@ namespace DeepSpeech
 
 }
 
-#endif /* __DEEPSPEECH_H__ */
+#endif /* DEEPSPEECH_H */
