@@ -78,25 +78,25 @@ tf_cc_shared_object(
         "//third_party/eigen3",
         #"//tensorflow/core:all_kernels",
         ### => Trying to be more fine-grained
-        ### Obtained by trial/error process ...
+        ### Use bin/ops_in_graph.py to list all the ops used by a frozen graph.
         ### CPU only build libdeepspeech.so from 63M to 36M
-        "//tensorflow/core/kernels:dense_update_ops",   # Assign
-        "//tensorflow/core/kernels:constant_op",        # Const
+        "//tensorflow/core/kernels:dense_update_ops",      # Assign
+        "//tensorflow/core/kernels:constant_op",           # Const
         "//tensorflow/core/kernels:immutable_constant_op", # ImmutableConst
-        "//tensorflow/core/kernels:identity_op",        # Identity
-        "//tensorflow/core/kernels:transpose_op",       # Transpose
-        "//tensorflow/core/kernels:reshape_op",         # Reshape
-        "//tensorflow/core/kernels:shape_ops",          # Shape
-        "//tensorflow/core/kernels:concat_op",          # ConcatV2
-        "//tensorflow/core/kernels:split_op",           # Split
-        "//tensorflow/core/kernels:variable_ops",       # VariableV2
-        "//tensorflow/core/kernels:relu_op",            # Relu
-        "//tensorflow/core/kernels:bias_op",            # BiasAdd
-        "//tensorflow/core/kernels:math",               # Range, MatMul
-        "//tensorflow/core/kernels:control_flow_ops",   # Enter
+        "//tensorflow/core/kernels:identity_op",           # Identity
+        "//tensorflow/core/kernels:transpose_op",          # Transpose
+        "//tensorflow/core/kernels:reshape_op",            # Reshape
+        "//tensorflow/core/kernels:shape_ops",             # Shape
+        "//tensorflow/core/kernels:concat_op",             # ConcatV2
+        "//tensorflow/core/kernels:split_op",              # Split
+        "//tensorflow/core/kernels:variable_ops",          # VariableV2
+        "//tensorflow/core/kernels:relu_op",               # Relu
+        "//tensorflow/core/kernels:bias_op",               # BiasAdd
+        "//tensorflow/core/kernels:math",                  # Range, MatMul
+        "//tensorflow/core/kernels:control_flow_ops",      # Enter
         #### Needed by production model produced without "--use_seq_length False"
-        #"//tensorflow/core/kernels:logging_ops",         # Assert
-        #"//tensorflow/core/kernels:reverse_sequence_op", # ReverseSequence
+        #"//tensorflow/core/kernels:logging_ops",           # Assert
+        #"//tensorflow/core/kernels:reverse_sequence_op",   # ReverseSequence
     ] + if_native_model([
         "//tensorflow/compiler/tf2xla:xla_compiled_cpu_function",
     ])+ if_cuda([
