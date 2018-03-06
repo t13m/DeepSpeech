@@ -95,9 +95,9 @@ namespace DeepSpeech
        *
        * @return The STT result. The user is responsible for freeing the string.
        */
-      char* stt(const short* aBuffer,
-                unsigned int aBufferSize,
-                int aSampleRate);
+      const char* stt(const short* aBuffer,
+                      unsigned int aBufferSize,
+                      int aSampleRate);
 
       /**
        * @brief Setup a context used for performing streaming inference.
@@ -105,12 +105,13 @@ namespace DeepSpeech
        *        to {@link feedAudioContent()} and {@link finishStream()}.
        *
        * @param aPreAllocFrames Number of timestep frames to reserve. One timestep
-       *                        is equivalent to two window lenghts (50ms), so
+       *                        is equivalent to two window lengths (50ms), so
        *                        by default we reserve enough frames for 3 seconds
        *                        of audio.
        * @param aSampleRate The sample-rate of the audio signal.
        *
-       * @return A context pointer that represents the streaming state.
+       * @return A context pointer that represents the streaming state. Can be
+       *         null if an error occurs.
        */
       StreamingState* setupStream(unsigned int aPreAllocFrames = 150,
                                   unsigned int aSampleRate = 16000);
@@ -135,7 +136,7 @@ namespace DeepSpeech
        *
        * @note This method will free the context pointer (@p aCtx).
        */
-      char* finishStream(StreamingState* aCtx);
+      const char* finishStream(StreamingState* aCtx);
   };
 
   /**

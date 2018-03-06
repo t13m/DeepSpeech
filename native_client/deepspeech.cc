@@ -106,7 +106,7 @@ public:
   */
   StreamingState* setupStream(unsigned int prealloc_frames, unsigned int sample_rate);
   void feedAudioContent(StreamingState* ctx, const short* buffer, unsigned int buffer_size);
-  char* finishStream(StreamingState* ctx);
+  const char* finishStream(StreamingState* ctx);
 
 private:
   /**
@@ -114,14 +114,14 @@ private:
    *        CTC decoder with KenLM enabled
    *
    * @param n_frames       Number of timesteps to deal with
-   * @param logits         Matrix of logits, of dimensions:
-   *                       [n_frames][batch_size][num_classes]
+   * @param logits         Flat matrix of logits, of size:
+   *                       n_frames * batch_size * num_classes
    *
    * @return String representing the decoded text.
    *
    * @note This method will free @p logits.
    */
-  char* decode(std::vector<float>& logits);
+  const char* decode(std::vector<float>& logits);
 
   /**
    * @brief Do a single inference step in the acoustic model, with:
@@ -134,12 +134,12 @@ private:
    * @param[out] output_logits Should be large enough to fit
    *                           aNFrames * alphabet_size floats.
    */
-  void infer(float* mfcc, int n_frames, std::vector<float>& output_logits);
+  void infer(const float* mfcc, int n_frames, std::vector<float>& output_logits);
 
-  void processAudioWindow(StreamingState* ctx, short* buf, unsigned int len);
-  void processMfccWindow(StreamingState* ctx, float* buf, unsigned int len);
+  void processAudioWindow(StreamingState* ctx, const short* buf, unsigned int len);
+  void processMfccWindow(StreamingState* ctx, const float* buf, unsigned int len);
   void addZeroMfccWindow(StreamingState* ctx);
-  void processBatch(StreamingState* ctx, float* buf, unsigned int len);
+  void processBatch(StreamingState* ctx, const float* buf, unsigned int len);
 };
 
 StreamingState*
@@ -149,11 +149,16 @@ Private::setupStream(unsigned int prealloc_frames,
   Status status = session->Run({}, {}, {"initialize_state"}, nullptr);
 
   if (!status.ok()) {
-    std::cerr << "Error running session: " << status << "\n";
+    std::cerr << "Error running session: " << status << std::endl;
     return nullptr;
   }
 
   StreamingState* ctx = new StreamingState;
+  if (!ctx) {
+    std::cerr << "Could not allocate streaming state." << std::endl;
+    return nullptr;
+  }
+
   const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
 
   ctx->accumulated_logits.reserve(prealloc_frames * BATCH_SIZE * num_classes);
@@ -177,7 +182,9 @@ Private::feedAudioContent(StreamingState* ctx,
                           const short* buffer,
                           unsigned int buffer_size)
 {
+  // Consume all the data that was passed in, processing full buffers if needed
   while (buffer_size > 0) {
+    // Copy as much as we can into the audio buffer
     while (buffer_size > 0 && ctx->audio_buffer_len < AUDIO_WIN_LEN_SAMPLES) {
       ctx->audio_buffer[ctx->audio_buffer_len] = *buffer;
       ++ctx->audio_buffer_len;
@@ -185,41 +192,44 @@ Private::feedAudioContent(StreamingState* ctx,
       --buffer_size;
     }
 
+    // If the buffer is full, process and shift it
     if (ctx->audio_buffer_len == AUDIO_WIN_LEN_SAMPLES) {
       processAudioWindow(ctx, ctx->audio_buffer, ctx->audio_buffer_len);
-      // shift data by one step of 10ms
+      // Shift data by one step of 10ms
       memmove(ctx->audio_buffer, ctx->audio_buffer + AUDIO_WIN_STEP_SAMPLES, (AUDIO_WIN_LEN_SAMPLES - AUDIO_WIN_STEP_SAMPLES) * sizeof(short));
       ctx->audio_buffer_len -= AUDIO_WIN_STEP_SAMPLES;
     }
+
+    // Repeat until buffer empty
   }
 }
 
-char*
+const char*
 Private::finishStream(StreamingState* ctx)
 {
-  // flush audio buffer
+  // Flush audio buffer
   processAudioWindow(ctx, ctx->audio_buffer, ctx->audio_buffer_len);
 
-  // add empty mfcc vectors at end of sample
+  // Add empty mfcc vectors at end of sample
   for (int i = 0; i < MFCC_CONTEXT; ++i) {
     addZeroMfccWindow(ctx);
   }
 
-  // process final batch
+  // Process final batch
   if (ctx->batch_buffer_len > 0) {
     processBatch(ctx, ctx->batch_buffer, ctx->batch_buffer_len/MFCC_FEATS_PER_TIMESTEP);
   }
 
-  char* str = decode(ctx->accumulated_logits);
+  const char* str = decode(ctx->accumulated_logits);
   delete ctx;
   return str;
 }
 
 void
-Private::processAudioWindow(StreamingState* ctx, short* buf, unsigned int len)
+Private::processAudioWindow(StreamingState* ctx, const short* buf, unsigned int len)
 {
   ctx->skip_next_mfcc = !ctx->skip_next_mfcc;
-  if (!ctx->skip_next_mfcc) { // was true
+  if (!ctx->skip_next_mfcc) { // Was true
     return;
   }
 
@@ -241,9 +251,10 @@ Private::processAudioWindow(StreamingState* ctx, short* buf, unsigned int len)
       --bufferSize;
     }
 
+    // If we have a full timestep, process it
     if (ctx->mfcc_buffer_len == MFCC_FEATS_PER_TIMESTEP) {
       processMfccWindow(ctx, ctx->mfcc_buffer, ctx->mfcc_buffer_len);
-      // shift data by one step of one mfcc feature vector
+      // Shift data by one step of one mfcc feature vector
       memmove(ctx->mfcc_buffer, ctx->mfcc_buffer + MFCC_FEATURES, (ctx->mfcc_buffer_len - MFCC_FEATURES) * sizeof(float));
       ctx->mfcc_buffer_len -= MFCC_FEATURES;
     }
@@ -253,7 +264,7 @@ Private::processAudioWindow(StreamingState* ctx, short* buf, unsigned int len)
 }
 
 void
-Private::processMfccWindow(StreamingState* ctx, float* buf, unsigned int len)
+Private::processMfccWindow(StreamingState* ctx, const float* buf, unsigned int len)
 {
   while (len > 0) {
     while (len > 0 && ctx->batch_buffer_len < N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP) {
@@ -263,6 +274,7 @@ Private::processMfccWindow(StreamingState* ctx, float* buf, unsigned int len)
       --len;
     }
 
+    // If we have a full batch, process it
     if (ctx->batch_buffer_len == N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP) {
       processBatch(ctx, ctx->batch_buffer, N_STEPS_PER_BATCH);
       memset(ctx->batch_buffer, 0, N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP*sizeof(float));
@@ -282,6 +294,7 @@ Private::addZeroMfccWindow(StreamingState* ctx)
       --bufferSize;
     }
 
+    // If we have a full timestep, process it
     if (ctx->mfcc_buffer_len == MFCC_FEATS_PER_TIMESTEP) {
       processMfccWindow(ctx, ctx->mfcc_buffer, ctx->mfcc_buffer_len);
       // shift data by one step of one mfcc feature vector
@@ -292,17 +305,13 @@ Private::addZeroMfccWindow(StreamingState* ctx)
 }
 
 void
-Private::processBatch(StreamingState* ctx, float* buf, unsigned int n_steps)
+Private::processBatch(StreamingState* ctx, const float* buf, unsigned int n_steps)
 {
-  if (ctx->accumulated_logits.size() >= ctx->accumulated_logits.capacity() - n_steps) {
-    ctx->accumulated_logits.reserve(ctx->accumulated_logits.capacity() * 2);
-  }
-
   infer(buf, n_steps, ctx->accumulated_logits);
 }
 
 void
-Private::infer(float* aMfcc, int n_frames, std::vector<float>& logits_output)
+Private::infer(const float* aMfcc, int n_frames, std::vector<float>& logits_output)
 {
   const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
 
@@ -363,7 +372,7 @@ Private::infer(float* aMfcc, int n_frames, std::vector<float>& logits_output)
   }
 }
 
-char*
+const char*
 Private::decode(std::vector<float>& logits)
 {
   const int top_paths = 1;
@@ -470,17 +479,23 @@ Model::Model(const char* aModelPath, int aNCep, int aNContext,
     status = ReadBinaryProto(Env::Default(), aModelPath, &mPriv->graph_def);
   }
   if (!status.ok()) {
-    (void)mPriv->session->Close();
+    Status closeStatus = mPriv->session->Close();
     mPriv->session = nullptr;
     std::cerr << status << std::endl;
+    if (!closeStatus.ok()) {
+      std::cerr << "While handling the above error, another error occurred: " << closeStatus << std::endl;
+    }
     return;
   }
 
   status = mPriv->session->Create(mPriv->graph_def);
   if (!status.ok()) {
-    (void)mPriv->session->Close();
+    Status closeStatus = mPriv->session->Close();
     mPriv->session = nullptr;
     std::cerr << status << std::endl;
+    if (!closeStatus.ok()) {
+      std::cerr << "While handling the above error, another error occurred: " << closeStatus << std::endl;
+    }
     return;
   }
 
@@ -500,8 +515,11 @@ Model::Model(const char* aModelPath, int aNCep, int aNContext,
                   << " classes in its output. Make sure you're passing an alphabet "
                   << "file with the same size as the one used for training."
                   << std::endl;
-        (void)mPriv->session->Close();
+        Status closeStatus = mPriv->session->Close();
         mPriv->session = nullptr;
+        if (!closeStatus.ok()) {
+          std::cerr << "While handling the above error, another error occurred: " << closeStatus << std::endl;
+        }
         return;
       }
       break;
@@ -513,7 +531,10 @@ DEEPSPEECH_EXPORT
 Model::~Model()
 {
   if (mPriv->session) {
-    (void)mPriv->session->Close();
+    Status closeStatus = mPriv->session->Close();
+    if (!closeStatus.ok()) {
+      std::cerr << "Error closing TensorFlow session: " << closeStatus << std::endl;
+    }
   }
 
   delete mPriv->mmap_env;
@@ -544,7 +565,7 @@ Model::getInputVector(const short* aBuffer, unsigned int aBufferSize,
 }
 
 DEEPSPEECH_EXPORT
-char*
+const char*
 Model::stt(const short* aBuffer,
            unsigned int aBufferSize,
            int aSampleRate)
@@ -575,7 +596,7 @@ Model::feedAudioContent(StreamingState* ctx,
 }
 
 DEEPSPEECH_EXPORT
-char*
+const char*
 Model::finishStream(StreamingState* ctx)
 {
   return mPriv->finishStream(ctx);

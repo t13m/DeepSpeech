@@ -3,25 +3,25 @@ from __future__ import absolute_import, print_function
 import scipy.io.wavfile as wav
 import sys
 import math
+import warnings
+
+class DeepSpeechDeprecationWarning(DeprecationWarning):
+    pass
+
+warnings.simplefilter('once', category=DeepSpeechDeprecationWarning)
 
 try:
     from deepspeech import audioToInputVector
 except ImportError:
+    warnings.warn('DeepSpeech Python bindings could not be imported, resorting to slower code to compute audio features. '
+                  'Refer to README.md for instructions on how to install (or build) the DeepSpeech Python bindings.',
+                  category=DeepSpeechDeprecationWarning)
+
     import numpy as np
     from python_speech_features import mfcc
     from six.moves import range
 
-    class DeprecationWarning:
-        displayed = False
-
     def audioToInputVector(audio, fs, numcep, numcontext):
-        if DeprecationWarning.displayed is not True:
-            DeprecationWarning.displayed = True
-            print('------------------------------------------------------------------------', file=sys.stderr)
-            print('WARNING: libdeepspeech failed to load, resorting to deprecated code',      file=sys.stderr)
-            print('         Refer to README.md for instructions on installing libdeepspeech', file=sys.stderr)
-            print('------------------------------------------------------------------------', file=sys.stderr)
-
         # Get mfcc coefficients
         features = np.empty([0, numcep])
 

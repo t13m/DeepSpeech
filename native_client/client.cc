@@ -27,7 +27,7 @@
 using namespace DeepSpeech;
 
 typedef struct {
-  char* string;
+  const char* string;
   double cpu_time_overall;
 } ds_result;
 
@@ -177,7 +177,7 @@ ProcessFile(Model& context, const char* path, bool show_times)
 
   if (result.string) {
     printf("%s\n", result.string);
-    free(result.string);
+    free((void*)result.string);
   }
 
   if (show_times) {
