@@ -107,6 +107,7 @@ tf.app.flags.DEFINE_string  ('export_dir',       '',          'directory in whic
 tf.app.flags.DEFINE_integer ('export_version',   1,           'version number of the exported model')
 tf.app.flags.DEFINE_boolean ('remove_export',    False,       'whether to remove old exported models')
 tf.app.flags.DEFINE_boolean ('use_seq_length',   True,        'have sequence_length in the exported graph (will make tfcompile unhappy)')
+tf.app.flags.DEFINE_integer ('n_steps',          16,          'how many timesteps to process at once by the export graph, higher values mean more latency')
 
 # Reporting
 
@@ -511,7 +512,7 @@ def BiRNN(batch_x, seq_length, dropout, batch_size=None, n_steps=-1, rnn_impl=rn
     # Finally we reshape layer_6 from a tensor of shape [n_steps*batch_size, n_hidden_6]
     # to the slightly more useful shape [n_steps, batch_size, n_hidden_6].
     # Note, that this differs from the input in that it is time-major.
-    layer_6 = tf.reshape(layer_6, [-1, batch_size, n_hidden_6], name="logits")
+    layer_6 = tf.reshape(layer_6, [n_steps, batch_size, n_hidden_6], name="logits")
     layers['logits'] = layer_6
 
     # Output shape: [n_steps, batch_size, n_hidden_6]
@@ -1772,7 +1773,7 @@ def export():
         tf.reset_default_graph()
         session = tf.Session(config=session_config)
 
-        inputs, outputs = create_inference_graph(batch_size=1, n_steps=16)
+        inputs, outputs = create_inference_graph(batch_size=1, n_steps=FLAGS.n_steps)
 
         # Create a saver using variables from the above newly created graph
         mapping = {v.op.name: v for v in tf.global_variables() if not v.op.name.startswith('previous_state_')}
@@ -1805,15 +1806,6 @@ def export():
                 initializer_nodes='',
                 variable_names_blacklist='previous_state_c,previous_state_h')
 
-            # Load and export as string
-            with tf.gfile.FastGFile(output_graph_path, 'rb') as fin:
-                graph_def = tf.GraphDef()
-                graph_def.ParseFromString(fin.read())
-
-                with tf.gfile.FastGFile(output_graph_path + 'txt', 'w') as fout:
-                    from google.protobuf import text_format
-                    fout.write(text_format.MessageToString(graph_def))
-
             log_info('Models exported at %s' % (FLAGS.export_dir))
         except RuntimeError as e:
             log_error(str(e))
@@ -1824,7 +1816,8 @@ def do_single_file_inference(input_file_path):
         inputs, outputs = create_inference_graph(batch_size=1, use_new_decoder=True)
 
         # Create a saver using variables from the above newly created graph
-        saver = tf.train.Saver(tf.global_variables())
+        mapping = {v.op.name: v for v in tf.global_variables() if not v.op.name.startswith('previous_state_')}
+        saver = tf.train.Saver(mapping)
 
         # Restore variables from training checkpoint
         # TODO: This restores the most recent checkpoint, but if we use validation to counterract
@@ -1837,16 +1830,33 @@ def do_single_file_inference(input_file_path):
         checkpoint_path = checkpoint.model_checkpoint_path
         saver.restore(session, checkpoint_path)
 
+        session.run(outputs['initialize_state'])
+
         mfcc = audiofile_to_input_vector(input_file_path, n_input, n_context)
 
-        output = session.run(outputs['outputs'], feed_dict = {
-            inputs['input']: [mfcc],
-            inputs['input_lengths']: [len(mfcc)],
-        })
+        logits = np.empty([0, 1, alphabet.size()+1])
+        for i in range(0, len(mfcc), FLAGS.n_steps):
+            chunk = mfcc[i:i+FLAGS.n_steps]
 
-        text = ndarray_to_text(output[0][0], alphabet)
+            # pad with zeros if not enough steps (len(mfcc) % FLAGS.n_steps != 0)
+            if len(chunk) < FLAGS.n_steps:
+                chunk = np.pad(chunk,
+                               ((0, FLAGS.n_steps-len(chunk)), (0, 0)),
+                               mode='constant',
+                               constant_values=0)
 
-        print(text)
+            output = session.run(outputs['outputs'], feed_dict = {
+                inputs['input']: [chunk],
+                inputs['input_lengths']: [len(chunk)],
+            })
+            logits = np.concatenate((logits, output))
+
+        decoded, _ = decode_with_lm(logits, [len(logits)], merge_repeated=False, beam_width=FLAGS.beam_width)
+        output = session.run(decoded)
+
+        text = sparse_tensor_value_to_texts(output[0], alphabet)
+
+        print(text[0])
 
 
 def main(_) :

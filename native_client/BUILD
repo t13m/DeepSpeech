@@ -79,7 +79,7 @@ tf_cc_shared_object(
         #"//tensorflow/core:all_kernels",
         ### => Trying to be more fine-grained
         ### Use bin/ops_in_graph.py to list all the ops used by a frozen graph.
-        ### CPU only build libdeepspeech.so from 63M to 36M
+        ### CPU only build, libdeepspeech.so file size reduced by ~50%
         "//tensorflow/core/kernels:dense_update_ops",      # Assign
         "//tensorflow/core/kernels:constant_op",           # Const
         "//tensorflow/core/kernels:immutable_constant_op", # ImmutableConst
