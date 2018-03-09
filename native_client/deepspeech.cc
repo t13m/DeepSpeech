@@ -7,7 +7,9 @@
 #include "native_client/deepspeech_model_core.h" // generated
 #endif
 
+#include <algorithm>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "deepspeech.h"
@@ -49,17 +51,16 @@ using namespace tensorflow;
 using tensorflow::ctc::CTCBeamSearchDecoder;
 using tensorflow::ctc::CTCDecoder;
 
+using std::vector;
+
 namespace DeepSpeech {
 
 class StreamingState {
 public:
-  std::vector<float> accumulated_logits;
-  short audio_buffer[AUDIO_WIN_LEN_SAMPLES];
-  unsigned int audio_buffer_len;
-  float mfcc_buffer[MFCC_FEATS_PER_TIMESTEP];
-  unsigned int mfcc_buffer_len;
-  float batch_buffer[N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP];
-  unsigned int batch_buffer_len;
+  vector<float> accumulated_logits;
+  vector<short> audio_buffer;
+  vector<float> mfcc_buffer;
+  vector<float> batch_buffer;
   bool skip_next_mfcc;
 };
 
@@ -118,10 +119,8 @@ private:
    *                       n_frames * batch_size * num_classes
    *
    * @return String representing the decoded text.
-   *
-   * @note This method will free @p logits.
    */
-  const char* decode(std::vector<float>& logits);
+  const char* decode(vector<float>& logits);
 
   /**
    * @brief Do a single inference step in the acoustic model, with:
@@ -134,12 +133,13 @@ private:
    * @param[out] output_logits Should be large enough to fit
    *                           aNFrames * alphabet_size floats.
    */
-  void infer(const float* mfcc, int n_frames, std::vector<float>& output_logits);
+  void infer(const float* mfcc, int n_frames, vector<float>& output_logits);
 
-  void processAudioWindow(StreamingState* ctx, const short* buf, unsigned int len);
-  void processMfccWindow(StreamingState* ctx, const float* buf, unsigned int len);
+  void processAudioWindow(StreamingState* ctx, const vector<short>& buf);
+  void processMfccWindow(StreamingState* ctx, const vector<float>& buf);
+  void pushMfccBuffer(StreamingState* ctx, const float* buf, unsigned int len);
   void addZeroMfccWindow(StreamingState* ctx);
-  void processBatch(StreamingState* ctx, const float* buf, unsigned int len);
+  void processBatch(StreamingState* ctx, const vector<float>& buf, unsigned int n_steps);
 };
 
 StreamingState*
@@ -163,14 +163,10 @@ Private::setupStream(unsigned int prealloc_frames,
 
   ctx->accumulated_logits.reserve(prealloc_frames * BATCH_SIZE * num_classes);
 
-  memset(ctx->audio_buffer, 0, sizeof(ctx->audio_buffer));
-  ctx->audio_buffer_len = 0;
-
-  memset(ctx->mfcc_buffer, 0, sizeof(ctx->mfcc_buffer));
-  ctx->mfcc_buffer_len = MFCC_FEATURES*MFCC_CONTEXT; // initial zero entries
-
-  memset(ctx->batch_buffer, 0, sizeof(ctx->batch_buffer));
-  ctx->batch_buffer_len = 0;
+  ctx->audio_buffer.reserve(AUDIO_WIN_LEN_SAMPLES);
+  ctx->mfcc_buffer.reserve(MFCC_FEATS_PER_TIMESTEP);
+  ctx->mfcc_buffer.resize(MFCC_FEATURES*MFCC_CONTEXT, 0.f);
+  ctx->batch_buffer.reserve(N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP);
 
   ctx->skip_next_mfcc = false;
 
@@ -184,20 +180,18 @@ Private::feedAudioContent(StreamingState* ctx,
 {
   // Consume all the data that was passed in, processing full buffers if needed
   while (buffer_size > 0) {
-    // Copy as much as we can into the audio buffer
-    while (buffer_size > 0 && ctx->audio_buffer_len < AUDIO_WIN_LEN_SAMPLES) {
-      ctx->audio_buffer[ctx->audio_buffer_len] = *buffer;
-      ++ctx->audio_buffer_len;
-      ++buffer;
-      --buffer_size;
-    }
+    unsigned int next_copy_amount = std::min(buffer_size, (unsigned int)(AUDIO_WIN_LEN_SAMPLES - ctx->audio_buffer.size()));
+    ctx->audio_buffer.insert(ctx->audio_buffer.end(), buffer, buffer + next_copy_amount);
+    buffer += next_copy_amount;
+    buffer_size -= next_copy_amount;
+    assert(ctx->audio_buffer.size() <= AUDIO_WIN_STEP_SAMPLES);
 
     // If the buffer is full, process and shift it
-    if (ctx->audio_buffer_len == AUDIO_WIN_LEN_SAMPLES) {
-      processAudioWindow(ctx, ctx->audio_buffer, ctx->audio_buffer_len);
+    if (ctx->audio_buffer.size() == AUDIO_WIN_LEN_SAMPLES) {
+      processAudioWindow(ctx, ctx->audio_buffer);
       // Shift data by one step of 10ms
-      memmove(ctx->audio_buffer, ctx->audio_buffer + AUDIO_WIN_STEP_SAMPLES, (AUDIO_WIN_LEN_SAMPLES - AUDIO_WIN_STEP_SAMPLES) * sizeof(short));
-      ctx->audio_buffer_len -= AUDIO_WIN_STEP_SAMPLES;
+      std::rotate(ctx->audio_buffer.begin(), ctx->audio_buffer.begin() + AUDIO_WIN_STEP_SAMPLES, ctx->audio_buffer.end());
+      ctx->audio_buffer.resize(ctx->audio_buffer.size() - AUDIO_WIN_STEP_SAMPLES);
     }
 
     // Repeat until buffer empty
@@ -208,7 +202,7 @@ const char*
 Private::finishStream(StreamingState* ctx)
 {
   // Flush audio buffer
-  processAudioWindow(ctx, ctx->audio_buffer, ctx->audio_buffer_len);
+  processAudioWindow(ctx, ctx->audio_buffer);
 
   // Add empty mfcc vectors at end of sample
   for (int i = 0; i < MFCC_CONTEXT; ++i) {
@@ -216,8 +210,8 @@ Private::finishStream(StreamingState* ctx)
   }
 
   // Process final batch
-  if (ctx->batch_buffer_len > 0) {
-    processBatch(ctx, ctx->batch_buffer, ctx->batch_buffer_len/MFCC_FEATS_PER_TIMESTEP);
+  if (ctx->batch_buffer.size() > 0) {
+    processBatch(ctx, ctx->batch_buffer, ctx->batch_buffer.size()/MFCC_FEATS_PER_TIMESTEP);
   }
 
   const char* str = decode(ctx->accumulated_logits);
@@ -226,7 +220,7 @@ Private::finishStream(StreamingState* ctx)
 }
 
 void
-Private::processAudioWindow(StreamingState* ctx, const short* buf, unsigned int len)
+Private::processAudioWindow(StreamingState* ctx, const vector<short>& buf)
 {
   ctx->skip_next_mfcc = !ctx->skip_next_mfcc;
   if (!ctx->skip_next_mfcc) { // Was true
@@ -235,83 +229,67 @@ Private::processAudioWindow(StreamingState* ctx, const short* buf, unsigned int 
 
   // Compute MFCC features
   float* mfcc;
-  int n_frames = csf_mfcc(buf, len, SAMPLE_RATE,
+  int n_frames = csf_mfcc(buf.data(), buf.size(), SAMPLE_RATE,
                           AUDIO_WIN_LEN, AUDIO_WIN_STEP, MFCC_FEATURES, N_FILTERS, N_FFT,
                           LOWFREQ, SAMPLE_RATE/2, COEFF, CEP_LIFTER, 1, nullptr,
                           &mfcc);
   assert(n_frames == 1);
 
-  float* buffer = mfcc;
-  unsigned int bufferSize = n_frames * MFCC_FEATURES;
-  while (bufferSize > 0) {
-    while (bufferSize > 0 && ctx->mfcc_buffer_len < MFCC_FEATS_PER_TIMESTEP) {
-      ctx->mfcc_buffer[ctx->mfcc_buffer_len] = *buffer;
-      ++ctx->mfcc_buffer_len;
-      ++buffer;
-      --bufferSize;
-    }
-
-    // If we have a full timestep, process it
-    if (ctx->mfcc_buffer_len == MFCC_FEATS_PER_TIMESTEP) {
-      processMfccWindow(ctx, ctx->mfcc_buffer, ctx->mfcc_buffer_len);
-      // Shift data by one step of one mfcc feature vector
-      memmove(ctx->mfcc_buffer, ctx->mfcc_buffer + MFCC_FEATURES, (ctx->mfcc_buffer_len - MFCC_FEATURES) * sizeof(float));
-      ctx->mfcc_buffer_len -= MFCC_FEATURES;
-    }
-  }
-
+  pushMfccBuffer(ctx, mfcc, n_frames * MFCC_FEATURES);
   free(mfcc);
-}
-
-void
-Private::processMfccWindow(StreamingState* ctx, const float* buf, unsigned int len)
-{
-  while (len > 0) {
-    while (len > 0 && ctx->batch_buffer_len < N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP) {
-      ctx->batch_buffer[ctx->batch_buffer_len] = *buf;
-      ++ctx->batch_buffer_len;
-      ++buf;
-      --len;
-    }
-
-    // If we have a full batch, process it
-    if (ctx->batch_buffer_len == N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP) {
-      processBatch(ctx, ctx->batch_buffer, N_STEPS_PER_BATCH);
-      memset(ctx->batch_buffer, 0, N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP*sizeof(float));
-      ctx->batch_buffer_len = 0;
-    }
-  }
 }
 
 void
 Private::addZeroMfccWindow(StreamingState* ctx)
 {
-  unsigned int bufferSize = MFCC_FEATURES;
-  while (bufferSize > 0) {
-    while (bufferSize > 0 && ctx->mfcc_buffer_len < MFCC_FEATS_PER_TIMESTEP) {
-      ctx->mfcc_buffer[ctx->mfcc_buffer_len] = 0.f;
-      ++ctx->mfcc_buffer_len;
-      --bufferSize;
-    }
+  static const float zero_buffer[MFCC_FEATURES] = {0.f};
+  pushMfccBuffer(ctx, zero_buffer, MFCC_FEATURES);
+}
 
-    // If we have a full timestep, process it
-    if (ctx->mfcc_buffer_len == MFCC_FEATS_PER_TIMESTEP) {
-      processMfccWindow(ctx, ctx->mfcc_buffer, ctx->mfcc_buffer_len);
-      // shift data by one step of one mfcc feature vector
-      memmove(ctx->mfcc_buffer, ctx->mfcc_buffer + MFCC_FEATURES, (ctx->mfcc_buffer_len - MFCC_FEATURES) * sizeof(float));
-      ctx->mfcc_buffer_len -= MFCC_FEATURES;
+void
+Private::pushMfccBuffer(StreamingState* ctx, const float* buf, unsigned int len)
+{
+  while (len > 0) {
+    unsigned int next_copy_amount = std::min(len, (unsigned int)(MFCC_FEATS_PER_TIMESTEP - ctx->mfcc_buffer.size()));
+    ctx->mfcc_buffer.insert(ctx->mfcc_buffer.end(), buf, buf + next_copy_amount);
+    buf += next_copy_amount;
+    len -= next_copy_amount;
+    assert(ctx->mfcc_buffer.size() <= MFCC_FEATS_PER_TIMESTEP);
+
+    if (ctx->mfcc_buffer.size() == MFCC_FEATS_PER_TIMESTEP) {
+      processMfccWindow(ctx, ctx->mfcc_buffer);
+      // Shift data by one step of one mfcc feature vector
+      std::rotate(ctx->mfcc_buffer.begin(), ctx->mfcc_buffer.begin() + MFCC_FEATURES, ctx->mfcc_buffer.end());
+      ctx->mfcc_buffer.resize(ctx->mfcc_buffer.size() - MFCC_FEATURES);
     }
   }
 }
 
 void
-Private::processBatch(StreamingState* ctx, const float* buf, unsigned int n_steps)
+Private::processMfccWindow(StreamingState* ctx, const vector<float>& buf)
 {
-  infer(buf, n_steps, ctx->accumulated_logits);
+  auto start = buf.begin();
+  while (start != buf.end()) {
+    unsigned int next_copy_amount = std::min(std::distance(start, buf.end()), (long)(N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP - ctx->batch_buffer.size()));
+    ctx->batch_buffer.insert(ctx->batch_buffer.end(), start, start + next_copy_amount);
+    start += next_copy_amount;
+    assert(ctx->batch_buffer.size() <= N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP);
+
+    if (ctx->batch_buffer.size() == N_STEPS_PER_BATCH*MFCC_FEATS_PER_TIMESTEP) {
+      processBatch(ctx, ctx->batch_buffer, N_STEPS_PER_BATCH);
+      ctx->batch_buffer.resize(0);
+    }
+  }
 }
 
 void
-Private::infer(const float* aMfcc, int n_frames, std::vector<float>& logits_output)
+Private::processBatch(StreamingState* ctx, const vector<float>& buf, unsigned int n_steps)
+{
+  infer(buf.data(), n_steps, ctx->accumulated_logits);
+}
+
+void
+Private::infer(const float* aMfcc, int n_frames, vector<float>& logits_output)
 {
   const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
 
@@ -354,7 +332,7 @@ Private::infer(const float* aMfcc, int n_frames, std::vector<float>& logits_outp
     Tensor input_lengths(DT_INT32, TensorShape({1}));
     input_lengths.scalar<int>()() = n_frames;
 
-    std::vector<Tensor> outputs;
+    vector<Tensor> outputs;
     Status status = session->Run(
       {{"input_node", input}, {"input_lengths", input_lengths}},
       {"logits"}, {}, &outputs);
@@ -373,7 +351,7 @@ Private::infer(const float* aMfcc, int n_frames, std::vector<float>& logits_outp
 }
 
 const char*
-Private::decode(std::vector<float>& logits)
+Private::decode(vector<float>& logits)
 {
   const int top_paths = 1;
   const size_t num_classes = alphabet->GetSize() + 1; // +1 for blank
@@ -386,15 +364,15 @@ Private::decode(std::vector<float>& logits)
   // mapping the memory from the container to an Eigen::ArrayXi,::MatrixXf,
   // using Eigen::Map.
   Eigen::Map<const Eigen::ArrayXi> seq_len(&sequence_lengths[0], BATCH_SIZE);
-  std::vector<Eigen::Map<const Eigen::MatrixXf>> inputs;
+  vector<Eigen::Map<const Eigen::MatrixXf>> inputs;
   inputs.reserve(n_frames);
   for (int t = 0; t < n_frames; ++t) {
     inputs.emplace_back(&logits[t * BATCH_SIZE * num_classes], BATCH_SIZE, num_classes);
   }
 
   // Prepare containers for output and scores.
-  // CTCDecoder::Output is std::vector<std::vector<int>>
-  std::vector<CTCDecoder::Output> decoder_outputs(top_paths);
+  // CTCDecoder::Output is vector<vector<int>>
+  vector<CTCDecoder::Output> decoder_outputs(top_paths);
   for (CTCDecoder::Output& output : decoder_outputs) {
     output.resize(BATCH_SIZE);
   }
