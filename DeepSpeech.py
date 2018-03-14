@@ -143,14 +143,8 @@ tf.app.flags.DEFINE_float   ('estop_std_thresh',  0.5,        'standard deviatio
 
 # Decoder
 
-tf.app.flags.DEFINE_string  ('decoder_library_path', 'native_client/libctc_decoder_with_kenlm.so', 'path to the libctc_decoder_with_kenlm.so library containing the decoder implementation.')
 tf.app.flags.DEFINE_string  ('alphabet_config_path', 'data/alphabet.txt', 'path to the configuration file specifying the alphabet used by the network. See the comment in data/alphabet.txt for a description of the format.')
-tf.app.flags.DEFINE_string  ('lm_binary_path',       'data/lm/lm.binary', 'path to the language model binary file created with KenLM')
-tf.app.flags.DEFINE_string  ('lm_trie_path',         'data/lm/trie', 'path to the language model trie file created with native_client/generate_trie')
-tf.app.flags.DEFINE_integer ('beam_width',        1024,       'beam width used in the CTC decoder when building candidate transcriptions')
-tf.app.flags.DEFINE_float   ('lm_weight',         1.75,       'the alpha hyperparameter of the CTC decoder. Language Model weight.')
-tf.app.flags.DEFINE_float   ('word_count_weight', 1.00,      'the beta hyperparameter of the CTC decoder. Word insertion weight (penalty).')
-tf.app.flags.DEFINE_float   ('valid_word_count_weight', 1.00, 'valid word insertion weight. This is used to lessen the word insertion penalty when the inserted word is part of the vocabulary.')
+tf.app.flags.DEFINE_integer ('beam_width', 1024, 'beam width used in the CTC decoder when building candidate transcriptions')
 
 # Inference mode
 
@@ -325,14 +319,6 @@ def initialize_globals():
             log_error('Path specified in --one_shot_infer is not a valid file.')
             exit(1)
 
-    if not os.path.exists(os.path.abspath(FLAGS.decoder_library_path)):
-        print('ERROR: The decoder library file does not exist. Make sure you have ' \
-              'downloaded or built the native client binaries and pass the ' \
-              'appropriate path to the binaries in the --decoder_library_path parameter.')
-
-    global custom_op_module
-    custom_op_module = tf.load_op_library(FLAGS.decoder_library_path)
-
 
 # Logging functions
 # =================
@@ -482,21 +468,6 @@ def BiRNN(batch_x, seq_length, dropout):
     # Output shape: [n_steps, batch_size, n_hidden_6]
     return layer_6
 
-def decode_with_lm(inputs, sequence_length, beam_width=100,
-                   top_paths=1, merge_repeated=True):
-  decoded_ixs, decoded_vals, decoded_shapes, log_probabilities = (
-      custom_op_module.ctc_beam_search_decoder_with_lm(
-          inputs, sequence_length, beam_width=beam_width,
-          model_path=FLAGS.lm_binary_path, trie_path=FLAGS.lm_trie_path, alphabet_path=FLAGS.alphabet_config_path,
-          lm_weight=FLAGS.lm_weight, word_count_weight=FLAGS.word_count_weight, valid_word_count_weight=FLAGS.valid_word_count_weight,
-          top_paths=top_paths, merge_repeated=merge_repeated))
-
-  return (
-      [tf.SparseTensor(ix, val, shape) for (ix, val, shape)
-       in zip(decoded_ixs, decoded_vals, decoded_shapes)],
-      log_probabilities)
-
-
 
 # Accuracy and Loss
 # =================
@@ -530,7 +501,8 @@ def calculate_mean_edit_distance_and_loss(model_feeder, tower, dropout):
     avg_loss = tf.reduce_mean(total_loss)
 
     # Beam search decode the batch
-    decoded, _ = decode_with_lm(logits, batch_seq_len, merge_repeated=False, beam_width=FLAGS.beam_width)
+    #decoded, _ = tf.nn.ctc_beam_search_decoder(logits, batch_seq_len, merge_repeated=False, beam_width=FLAGS.beam_width)
+    decoded, _ = tf.nn.ctc_greedy_decoder(logits, batch_seq_len, merge_repeated=False)
 
     # Compute the edit (Levenshtein) distance
     distance = tf.edit_distance(tf.cast(decoded[0], tf.int32), batch_y)
@@ -1142,9 +1114,9 @@ class TrainingCoordinator(object):
 
     def _log_all_jobs(self):
         '''Use this to debug-print epoch state'''
-        log_debug('Epochs - running: %d, done: %d' % (len(self._epochs_running), len(self._epochs_done)))
+        log_info('Epochs - running: %d, done: %d' % (len(self._epochs_running), len(self._epochs_done)))
         for epoch in self._epochs_running:
-            log_debug('       - running: ' + epoch.job_status())
+            log_info('       - running: ' + epoch.job_status())
 
     def start_coordination(self, model_feeder, step=0):
         '''Starts to coordinate epochs and jobs among workers on base of
@@ -1201,8 +1173,8 @@ class TrainingCoordinator(object):
                 self._training_time = stopwatch()
 
             # Important for debugging
-            log_debug('step: %d' % step)
-            log_debug('epoch: %d' % self._epoch)
+            log_info('step: %d' % step)
+            log_info('epoch: %d' % self._epoch)
             log_debug('target epoch: %d' % self._target_epoch)
             log_debug('steps per epoch: %d' % steps_per_epoch)
             log_debug('number of batches in train set: %d' % model_feeder.train.total_batches)
@@ -1637,7 +1609,7 @@ def train(server=None):
                         _, current_step, batch_loss, batch_report = session.run([train_op, global_step, loss, report_params], **extra_params)
 
                         # Uncomment the next line for debugging race conditions / distributed TF
-                        log_debug('Finished batch step %d.' % current_step)
+                        log_debug('Finished batch step %d with batch_loss = %.5f' % (current_step, batch_loss))
 
                         # Add batch to loss
                         total_loss += batch_loss
@@ -1690,7 +1662,7 @@ def create_inference_graph(batch_size=None, use_new_decoder=False):
     logits = BiRNN(input_tensor, tf.to_int64(seq_length) if FLAGS.use_seq_length else None, no_dropout)
 
     # Beam search decode the batch
-    decoder = decode_with_lm if use_new_decoder else tf.nn.ctc_beam_search_decoder
+    decoder = tf.nn.ctc_beam_search_decoder
 
     decoded, _ = decoder(logits, seq_length, merge_repeated=False, beam_width=FLAGS.beam_width)
     decoded = tf.convert_to_tensor(

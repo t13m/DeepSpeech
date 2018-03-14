@@ -10,7 +10,7 @@ from functools import reduce
 
 class Alphabet(object):
     def __init__(self, config_file):
-        self._label_to_str = []
+        self._label_to_str = {}
         self._str_to_label = {}
         self._size = 0
         with codecs.open(config_file, 'r', 'utf-8') as fin:
@@ -19,7 +19,7 @@ class Alphabet(object):
                     line = '#\n'
                 elif line[0] == '#':
                     continue
-                self._label_to_str += line[:-1] # remove the line ending
+                self._label_to_str[self._size] = line[:-1] # remove the line ending
                 self._str_to_label[line[:-1]] = self._size
                 self._size += 1
 
@@ -86,8 +86,8 @@ def sparse_tuple_to_texts(tuple, alphabet):
 def ndarray_to_text(value, alphabet):
     results = ''
     for i in range(len(value)):
-        results += alphabet.string_from_label(value[i])
-    return results
+        results += (alphabet.string_from_label(value[i]) + ' ')
+    return results[:-1]
 
 def wer(original, result):
     r"""
