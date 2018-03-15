@@ -149,6 +149,7 @@ tf.app.flags.DEFINE_integer ('beam_width', 1024, 'beam width used in the CTC dec
 # Inference mode
 
 tf.app.flags.DEFINE_string  ('one_shot_infer',       '',       'one-shot inference mode: specify a wav file and the script will load the checkpoint and perform inference on it. Disables training, testing and exporting.')
+tf.app.flags.DEFINE_string  ('one_shot_infer_output_softmax',     '',       'softmax output path if specified, ')
 
 # Initialize from frozen model
 
@@ -1604,12 +1605,12 @@ def train(server=None):
                         if session.should_stop():
                             break
 
-                        log_debug('Starting batch...')
+                        log_info('Starting batch...')
                         # Compute the batch
                         _, current_step, batch_loss, batch_report = session.run([train_op, global_step, loss, report_params], **extra_params)
 
                         # Uncomment the next line for debugging race conditions / distributed TF
-                        log_debug('Finished batch step %d with batch_loss = %.5f' % (current_step, batch_loss))
+                        log_info('Finished batch step %d with batch_loss = %.5f' % (current_step, batch_loss))
 
                         # Add batch to loss
                         total_loss += batch_loss
@@ -1675,6 +1676,7 @@ def create_inference_graph(batch_size=None, use_new_decoder=False):
         },
         {
             'outputs': decoded,
+            'softmax': tf.nn.softmax(logits)
         }
     )
 
@@ -1747,10 +1749,14 @@ def do_single_file_inference(input_file_path):
 
         mfcc = audiofile_to_input_vector(input_file_path, n_input, n_context)
 
-        output = session.run(outputs['outputs'], feed_dict = {
+        output, softmax = session.run([outputs['outputs'], outputs['softmax']], feed_dict = {
             inputs['input']: [mfcc],
             inputs['input_lengths']: [len(mfcc)],
         })
+
+        if (FLAGS.one_shot_infer_output_softmax != ""):
+            np.save(FLAGS.one_shot_infer_output_softmax, softmax)
+            log_info("Softmax(logits) saved to {}.".format(FLAGS.one_shot_infer_output_softmax))
 
         text = ndarray_to_text(output[0][0], alphabet)
 

@@ -30,7 +30,7 @@ python -u DeepSpeech.py \
   --train_batch_size 8 \
   --dev_batch_size 8 \
   --test_batch_size 8 \
-  --n_hidden 2048 \
+  --n_hidden 600 \
   --epoch 30 \
   --checkpoint_dir "$checkpoint_dir" \
   --wer_log_pattern "GLOBAL LOG: logwer('${COMPUTE_ID}', '%s', '%s', %f)" \

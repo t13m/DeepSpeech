@@ -145,8 +145,8 @@ if __name__ == '__main__':
             os.mkdir(args.target_dir + '/dev')
         wav_part = prepare_data(args.dev_data_dir, args.target_dir + '/dev')
         trans_part = prepare_trans(args.dev_data_dir, args.lang_dir)
-        files = [(wav_part[key], os.path.getsize(wav_part[key]), trans_part[key]) for key in trans_part.keys()]
-        devset = pandas.DataFrame(data=files, columns=["wav_filename", "wav_filesize", "transcript"])
+        files = [(key, wav_part[key], os.path.getsize(wav_part[key]), trans_part[key]) for key in trans_part.keys()]
+        devset = pandas.DataFrame(data=files, columns=["utt_id", "wav_filename", "wav_filesize", "transcript"])
         devset.to_csv(os.path.join(args.target_dir, 'hkust_phn_dev.csv'), index=False)
 
     if args.train_data_dir and args.lang_dir and args.target_dir:
@@ -157,6 +157,6 @@ if __name__ == '__main__':
             os.mkdir(args.target_dir + '/train')
         wav_part = prepare_data(args.train_data_dir, args.target_dir + '/train')
         trans_part = prepare_trans(args.train_data_dir, args.lang_dir)
-        files = [(wav_part[key], os.path.getsize(wav_part[key]), trans_part[key]) for key in trans_part.keys()]
-        trainset = pandas.DataFrame(data=files, columns=["wav_filename", "wav_filesize", "transcript"])
+        files = [(key, wav_part[key], os.path.getsize(wav_part[key]), trans_part[key]) for key in trans_part.keys()]
+        trainset = pandas.DataFrame(data=files, columns=["utt_id", "wav_filename", "wav_filesize", "transcript"])
         trainset.to_csv(os.path.join(args.target_dir, 'hkust_phn_train.csv'), index=False)
